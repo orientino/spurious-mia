@@ -139,7 +139,7 @@ class LossComputer:
         self.avg_acc = group_frac @ self.avg_group_acc
 
 
-def get_loader(data, train, reweight_groups):
+def get_loader(data, train, reweight_groups, **kwargs):
     if not train:  # Validation or testing
         assert reweight_groups is None
         shuffle = False
@@ -166,5 +166,4 @@ def get_loader(data, train, reweight_groups):
         # Replacement needs to be set to True, otherwise we'll run out of minority samples
         sampler = WeightedRandomSampler(weights, len(data), replacement=True)
 
-    kwargs = {"batch_size": 32, "num_workers": 4}
     return DataLoader(data, shuffle=shuffle, sampler=sampler, **kwargs)

@@ -4,7 +4,10 @@ import numpy as np
 import pandas as pd
 import timm
 import torch
+import torch.nn as nn
 import torchvision.transforms.v2 as T
+from bit import KNOWN_MODELS
+from convnextv2 import convnextv2_tiny
 from pytorch_transformers import BertConfig, BertForSequenceClassification
 from torch.utils.data import Dataset, Subset
 from wilds import get_dataset
@@ -12,13 +15,21 @@ from wilds import get_dataset
 
 def get_model(modelname, n_classes):
     if modelname == "resnet50":
-        # top-1 81.214
+        # top-1 81.21
         # https://huggingface.co/timm/resnet50.a1_in1k
         return timm.create_model(
             "resnet50.a1_in1k", pretrained=True, num_classes=n_classes, drop_rate=0.1
         )
+    elif modelname == "bit_s":
+        # top-1 81.30
+        # https://github.com/google-research/big_transfer
+        m = KNOWN_MODELS["BiT-S-R50x1"](head_size=1000)
+        m.load_from(np.load("bit-s-r50x1.npz"))
+        m.head.conv = nn.Conv2d(2048, 62, kernel_size=1, bias=True)
+        return m
     elif modelname == "convnext_t":
-        # top-1 82.066
+        # top-1
+        # param 82.1M
         # https://huggingface.co/timm/convnext_tiny.fb_in1k
         return timm.create_model(
             "timm/convnext_tiny.fb_in1k",
@@ -26,8 +37,18 @@ def get_model(modelname, n_classes):
             num_classes=n_classes,
             drop_rate=0.1,
         )
+    elif modelname == "convnextv2_t":
+        # top-1 83.0 (finetuned version, we use the self-supervised only)
+        # param 28.6M
+        # https://huggingface.co/facebook/convnextv2-tiny-1k-224
+        # https://github.com/facebookresearch/ConvNeXt-V2/tree/main
+        m = convnextv2_tiny(num_classes=1000)
+        m.load_state_dict(torch.load("convnextv2_tiny_1k_224_ema.pt")["model"])
+        m.head = nn.Linear(m.head.in_features, n_classes)
+        return m
     elif modelname == "vit_s":
-        # top-1 79 (? https://arxiv.org/pdf/2106.10270.pdf)
+        # top-1 79
+        # https://arxiv.org/pdf/2106.10270.pdf (?)
         # https://huggingface.co/timm/vit_small_patch16_224.augreg_in1k
         return timm.create_model(
             "vit_small_patch16_224.augreg_in1k",
@@ -36,10 +57,30 @@ def get_model(modelname, n_classes):
             drop_rate=0.1,
         )
     elif modelname == "deit3_s":
-        # top-1 81.370
+        # top-1 81.37
         # https://huggingface.co/timm/deit3_small_patch16_224.fb_in1k
         return timm.create_model(
             "deit3_small_patch16_224.fb_in1k",
+            pretrained=True,
+            num_classes=n_classes,
+            drop_rate=0.1,
+        )
+    elif modelname == "swin_t":
+        # top-1 81.2
+        # param 28.0M
+        # https://huggingface.co/timm/swin_tiny_patch4_window7_224.ms_in1k
+        return timm.create_model(
+            "swin_tiny_patch4_window7_224.ms_in1k",
+            pretrained=True,
+            num_classes=n_classes,
+            drop_rate=0.1,
+        )
+    elif modelname == "hiera_t":
+        # top-1 82.78
+        # param 27.9M
+        # https://huggingface.co/timm/hiera_tiny_224.mae_in1k_ft_in1k
+        return timm.create_model(
+            "hiera_tiny_224.mae_in1k_ft_in1k",
             pretrained=True,
             num_classes=n_classes,
             drop_rate=0.1,
@@ -58,7 +99,17 @@ def get_model(modelname, n_classes):
 
 
 def get_data(dataname, augment=True):
-    datadir = # TODO: add dataset dir path
+    datadir = "/scratch/users/czhang/opt/data"
+
+    from pathlib import Path
+
+    datadir = Path.home() / "opt/data"
+
+    normalize = [
+        T.ToImage(),
+        T.ToDtype(torch.float32, scale=True),
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ]
 
     if dataname == "waterbirds":
         scale = 256.0 / 224.0
@@ -66,13 +117,14 @@ def get_data(dataname, augment=True):
         transform_train = T.Compose(
             [
                 T.RandomResizedCrop(
-                    resolutions, (0.7, 1.0), (0.75, 1.3333), 2, antialias=True
+                    resolutions,
+                    scale=(0.7, 1.0),
+                    ratio=(0.75, 1.3333),
+                    interpolation=2,
+                    antialias=True,
                 ),
-                T.RandomHorizontalFlip(),
-                T.ToImage(),
-                T.ToDtype(torch.float32, scale=True),
-                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ]
+            + normalize
         )
         transform_test = T.Compose(
             [
@@ -81,10 +133,8 @@ def get_data(dataname, augment=True):
                     antialias=True,
                 ),
                 T.CenterCrop(resolutions),
-                T.ToImage(),
-                T.ToDtype(torch.float32, scale=True),
-                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ]
+            + normalize
         )
         transform_train = transform_train if augment else transform_test
         data = get_dataset("waterbirds", root_dir=datadir, download=True)
@@ -109,19 +159,15 @@ def get_data(dataname, augment=True):
                     interpolation=2,
                 ),
                 T.RandomHorizontalFlip(),
-                T.ToImage(),
-                T.ToDtype(torch.float32, scale=True),
-                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ]
+            + normalize
         )
         transform_test = T.Compose(
             [
                 T.CenterCrop(orig_min_dim),
                 T.Resize(target_resolution),
-                T.ToImage(),
-                T.ToDtype(torch.float32, scale=True),
-                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ]
+            + normalize
         )
         transform_train = transform_train if augment else transform_test
         data = get_dataset("celebA", root_dir=datadir, download=True)
@@ -132,32 +178,6 @@ def get_data(dataname, augment=True):
             2 * train_ds.metadata_array[:, 1].numpy()
             + train_ds.metadata_array[:, 0].numpy()
         )
-    elif dataname == "fmow":
-        transform_train = T.Compose(
-            [
-                T.RandomHorizontalFlip(),
-                T.ToImage(),
-                T.ToDtype(torch.float32, scale=True),
-                T.Normalize(
-                    [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
-                ),  # default values
-            ]
-        )
-        transform_test = T.Compose(
-            [
-                T.ToImage(),
-                T.ToDtype(torch.float32, scale=True),
-                T.Normalize(
-                    [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
-                ),  # default values
-            ]
-        )
-        transform_train = transform_train if augment else transform_test
-        data = get_dataset("fmow", root_dir=datadir, download=True)
-        train_ds = data.get_subset("train", transform=transform_train)
-        val_ds = data.get_subset("val", transform=transform_test)
-        test_ds = data.get_subset("test", transform=transform_test)
-        groups = train_ds.metadata_array[:, 0].numpy()
     elif dataname == "multinli":
         data = MultiNLIDataset(
             os.path.join(datadir, "multinli_1.0"),
@@ -168,6 +188,23 @@ def get_data(dataname, augment=True):
         splits = data.get_splits(["train", "val", "test"])
         train_ds, val_ds, test_ds = splits["train"], splits["val"], splits["test"]
         groups = train_ds.group_array
+    elif "fmow" in dataname:
+        transform_train = T.Compose([T.RandomHorizontalFlip()] + normalize)
+        transform_test = T.Compose(normalize)
+        transform_train = transform_train if augment else transform_test
+        data = get_dataset("fmow", root_dir=datadir, download=True)
+        train_ds = data.get_subset("train", transform=transform_train)
+        val_ds = data.get_subset("val", transform=transform_test)
+        test_ds = data.get_subset("test", transform=transform_test)
+        groups = train_ds.metadata_array[:, 0].numpy()
+        if dataname == "fmow16":
+            train_ds = ReducedDataset(train_ds, 16)
+            val_ds = ReducedDataset(val_ds, 16)
+            test_ds = ReducedDataset(test_ds, 16)
+        elif dataname == "fmow4":
+            train_ds = ReducedDataset(train_ds, 4)
+            val_ds = ReducedDataset(val_ds, 4)
+            test_ds = ReducedDataset(test_ds, 4)
     else:
         raise NotImplementedError
 
@@ -304,3 +341,33 @@ class MultiNLIDataset(Dataset):
             subsets[split].group_array = self.group_array[indices]
             subsets[split].y_array = torch.from_numpy(self.y_array[indices])
         return subsets
+
+
+# FMoW Reduced Dataset --------------------------------------
+# Change the number of classes for FMoW dataset to control the complexity
+
+
+class ReducedDataset(Dataset):
+    def __init__(self, data, n_classes):
+        self.data = data
+        self.n_classes = n_classes
+        chunk = len(np.unique(self.data.y_array)) / self.n_classes
+        self._y_array = np.array(
+            [y // chunk for y in self.data.y_array], dtype=np.int64
+        )
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        x, _, metadata = self.data[idx]
+        y = self.y_array[idx]
+        return x, y, metadata
+
+    @property
+    def metadata_array(self):
+        return self.data.metadata_array
+
+    @property
+    def y_array(self):
+        return self._y_array

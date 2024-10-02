@@ -53,8 +53,9 @@ def save_embeddings(model, dl, dataname, datasplit, model_dir, device="cpu"):
     )
 
 
-def train_dfr(model_dir, dataname, datasplit="train", norm="l1", n_heads=10, samples=200):
-
+def train_dfr(
+    model_dir, dataname, datasplit="train", norm="l1", n_heads=10, samples=200
+):
     def group_balance_data(x, y, g):
         g_idx = {g_: np.where(g == g_)[0] for g_ in np.unique(g)}
         for g_ in g_idx.values():
@@ -98,7 +99,9 @@ def train_dfr(model_dir, dataname, datasplit="train", norm="l1", n_heads=10, sam
 
     groups = np.unique(g)
     if dataname in ["fmow"]:
-        groups = np.delete(groups, np.argwhere(groups==5))  # remove the `others` group for evaluation
+        groups = np.delete(
+            groups, np.argwhere(groups == 5)
+        )  # remove the `others` group for evaluation
     print(f"Balanced dataset: {np.bincount(g)}")
     print(f"Groups: {groups}")
 
@@ -107,16 +110,20 @@ def train_dfr(model_dir, dataname, datasplit="train", norm="l1", n_heads=10, sam
     if dataname in ["waterbirds", "celeba"]:
         C_OPTIONS = [1.0, 0.7, 0.3, 0.1, 0.07, 0.03, 0.01]
         CLASS_WEIGHTS = [2.0, 3.0, 10.0, 100.0, 300.0, 1000.0]
-        CLASS_WEIGHT_OPTIONS = [{0: 1, 1:1}] + [
-            {0: 1, 1: w} for w in CLASS_WEIGHTS] + [
-            {0: w, 1: 1} for w in CLASS_WEIGHTS]
+        CLASS_WEIGHT_OPTIONS = (
+            [{0: 1, 1: 1}]
+            + [{0: 1, 1: w} for w in CLASS_WEIGHTS]
+            + [{0: w, 1: 1} for w in CLASS_WEIGHTS]
+        )
     elif dataname == "multinli":
         C_OPTIONS = [1.0, 0.5, 0.1, 0.05, 0.01]
         CLASS_WEIGHTS = [2.0, 3.0, 10.0, 100.0]
-        CLASS_WEIGHT_OPTIONS = [{0: 1, 1: 1, 2: 1}] + [
-            {0: w, 1: 1, 2: 1} for w in CLASS_WEIGHTS] + [
-            {0: 1, 1: w, 2: 1} for w in CLASS_WEIGHTS] + [
-            {0: 1, 1: 1, 2: w} for w in CLASS_WEIGHTS]
+        CLASS_WEIGHT_OPTIONS = (
+            [{0: 1, 1: 1, 2: 1}]
+            + [{0: w, 1: 1, 2: 1} for w in CLASS_WEIGHTS]
+            + [{0: 1, 1: w, 2: 1} for w in CLASS_WEIGHTS]
+            + [{0: 1, 1: 1, 2: w} for w in CLASS_WEIGHTS]
+        )
     elif dataname == "fmow":
         C_OPTIONS = [0.5, 0.1, 0.05]
         CLASS_WEIGHTS = [3.0]
@@ -128,11 +135,13 @@ def train_dfr(model_dir, dataname, datasplit="train", norm="l1", n_heads=10, sam
                 CLASS_WEIGHT_OPTIONS += [_weight]
     else:
         raise NotImplementedError
-        
+
     worst_accs = {}
     for c in tqdm(C_OPTIONS):
         for cls_w in CLASS_WEIGHT_OPTIONS:
-            logreg = LogisticRegression(norm, C=c, solver="liblinear", max_iter=20, class_weight=cls_w)
+            logreg = LogisticRegression(
+                norm, C=c, solver="liblinear", max_iter=20, class_weight=cls_w
+            )
             logreg.fit(x, y)
             preds = logreg.predict(x_val)
             group_accs = np.array([(preds == y_val)[g_val == g].mean() for g in groups])
@@ -145,9 +154,9 @@ def train_dfr(model_dir, dataname, datasplit="train", norm="l1", n_heads=10, sam
 
     coefs, intercepts = [], []
     for _ in tqdm(range(n_heads)):
-        x, y, g = group_data_fn(x_train, y_train, g_train)  
+        x, y, g = group_data_fn(x_train, y_train, g_train)
         while len(np.unique(y)) != len(np.unique(y_val)):
-            x, y, g = group_data_fn(x_train, y_train, g_train)  
+            x, y, g = group_data_fn(x_train, y_train, g_train)
 
         logreg = LogisticRegression(norm, solver="liblinear", max_iter=20, **best_hp)
         logreg.fit(x, y)
@@ -178,7 +187,9 @@ def test_dfr(model_dir, dataname, datasplit):
 
     groups = np.unique(g)
     if dataname in ["fmow"]:
-        groups = np.delete(groups, np.argwhere(groups==5))  # remove the `others` group for evaluation
+        groups = np.delete(
+            groups, np.argwhere(groups == 5)
+        )  # remove the `others` group for evaluation
     print(groups)
 
     preds = dfr.predict(x)

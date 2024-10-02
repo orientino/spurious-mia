@@ -1,7 +1,21 @@
+# Copyright 2021 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 import argparse
 import csv
 import functools
-import json
 import os
 import shutil
 from collections import defaultdict
@@ -23,7 +37,7 @@ def sweep(score, x):
     """
     Compute a ROC curve and then return the FPR, TPR, AUC, and ACC.
     """
-    fpr, tpr, _ = roc_curve(x, -score, drop_intermediate=False)
+    fpr, tpr, thresholds = roc_curve(x, -score, drop_intermediate=False)
     acc = np.max(1 - (fpr + (1 - tpr)) / 2)
     return fpr, tpr, auc(fpr, tpr), acc
 
@@ -38,6 +52,8 @@ def load_data():
 
     savedir = os.path.join("exp_test", args.data)
     for path in os.listdir(savedir):
+        if path == ".DS_Store":
+            continue
         scores.append(np.load(os.path.join(savedir, path, "scores.npy")))
         keep.append(np.load(os.path.join(savedir, path, "keep.npy")))
     scores = np.array(scores)  # [n_shadows, n_examples, n_augs]
@@ -48,6 +64,8 @@ def load_data():
     keep_group = defaultdict(list)
 
     for path in os.listdir(savedir):
+        if path == ".DS_Store":
+            continue
         g = np.load(os.path.join(savedir, path, "groups.npy"))
         s = np.load(os.path.join(savedir, path, "scores.npy"))
         k = np.load(os.path.join(savedir, path, "keep.npy"))
@@ -58,7 +76,9 @@ def load_data():
         del scores_group[5]
         del keep_group[5]
     for group in scores_group.keys():
-        scores_group[group] = np.array(scores_group[group])  # [n_shadows, n_examples_group, n_augs]
+        scores_group[group] = np.array(
+            scores_group[group]
+        )  # [n_shadows, n_examples_group, n_augs]
         keep_group[group] = np.array(keep_group[group])  # [n_shadows, n_examples_group]
         # print(scores_group[group].shape)
 
@@ -66,7 +86,13 @@ def load_data():
 
 
 def generate_ours(
-    keep, scores, check_keep, check_scores, in_size=100000, out_size=100000, fix_variance=False
+    keep,
+    scores,
+    check_keep,
+    check_scores,
+    in_size=100000,
+    out_size=100000,
+    fix_variance=False,
 ):
     """
     Fit a two predictive models using keep and scores in order to predict
@@ -110,7 +136,13 @@ def generate_ours(
 
 
 def generate_ours_offline(
-    keep, scores, check_keep, check_scores, in_size=100000, out_size=100000, fix_variance=False
+    keep,
+    scores,
+    check_keep,
+    check_scores,
+    in_size=100000,
+    out_size=100000,
+    fix_variance=False,
 ):
     """
     Fit a single predictive model using keep and scores in order to predict
@@ -185,8 +217,18 @@ def save_results(online):
     for i in range(args.n_models):
         # Prepare the shadow and target
         ignore = shutil.ignore_patterns("logits.npy", "model.pt", "*.npz")
-        shutil.copytree(f"{args.sdir}/{args.data}", f"exp_test/{args.data}", ignore=ignore, dirs_exist_ok=True)
-        shutil.copytree(f"{args.tdir}/{args.data}/{i}", f"exp_test/{args.data}/{i}", ignore=ignore, dirs_exist_ok=True)
+        shutil.copytree(
+            f"{args.sdir}/{args.data}",
+            f"exp_test/{args.data}",
+            ignore=ignore,
+            dirs_exist_ok=True,
+        )
+        shutil.copytree(
+            f"{args.tdir}/{args.data}/{i}",
+            f"exp_test/{args.data}/{i}",
+            ignore=ignore,
+            dirs_exist_ok=True,
+        )
 
         # Global results
         load_data()
@@ -196,10 +238,6 @@ def save_results(online):
         accs_t.append(acc_)
         aucs_t.append(auc_)
         lows_t.append(low_)
-
-        summary = {}
-        summary["t/auc"] = auc_
-        summary["t/tpr"] = low_
 
         # Per group results
         for group in scores_group.keys():
@@ -212,12 +250,6 @@ def save_results(online):
             accs[group].append(acc_)
             aucs[group].append(auc_)
             lows[group].append(low_)
-
-            summary[f"{group}/auc"] = auc_
-            summary[f"{group}/tpr"] = low_
-
-        with open(f"{args.tdir}/{args.data}/{i}/summary.json", "w") as f:
-            json.dump(summary, f)
 
     # Write results to CSV file
     data = []
@@ -259,5 +291,5 @@ def save_results(online):
 if __name__ == "__main__":
     print("LiRA Online =========== \n")
     save_results(online=True)
-    # print("LiRA Offline =========== \n")
-    # save_results(online=False)
+    print("LiRA Offline =========== \n")
+    save_results(online=False)

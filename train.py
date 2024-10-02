@@ -10,23 +10,25 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import wandb
-from opacus import PrivacyEngine
+from fastDP import PrivacyEngine
 from opacus.validators import ModuleValidator
 from pytorch_transformers import AdamW, WarmupLinearSchedule
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-from utils import get_data, get_model
 
 from spurious.groupdro import LossComputer, get_loader
+from utils import get_data, get_model
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--lr", default=0.1, type=float)
 parser.add_argument("--wd", default=0.1, type=float)
+parser.add_argument("--bs", default=32, type=int)
 parser.add_argument("--epochs", default=1, type=int)
 parser.add_argument("--model", default="resnet50", type=str)
 parser.add_argument("--data", default="waterbirds", type=str)
+parser.add_argument("--sched", action="store_true")
 
 # LiRA attack
 parser.add_argument("--n_shadows", default=16, type=int)
@@ -40,7 +42,8 @@ parser.add_argument("--c", type=int, default=0)
 parser.add_argument("--dfr", action="store_true")
 
 # Differential privacy
-parser.add_argument("--sigma", default=0, type=float)
+parser.add_argument("--eps", default=0, type=float)
+parser.add_argument("--delta", default=0, type=float)
 parser.add_argument("--clip", default=0, type=float)
 
 parser.add_argument("--debug", action="store_true")
@@ -92,11 +95,11 @@ def run():
     print(f"Pre: size per group:  {Counter(group_array)}")
     print(f"Pre: group array:  {group_array}")
 
-    bs = 32 if args.data not in ["multinli"] else 16
+    kwargs = {"batch_size": args.bs, "num_workers": 4, "pin_memory": False}
     train_ds = Subset(train_ds, keep_inds)
-    train_dl = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=4)
-    val_dl = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=4)
-    test_dl = DataLoader(test_ds, batch_size=bs, shuffle=False, num_workers=4)
+    train_dl = DataLoader(train_ds, shuffle=True, **kwargs)
+    val_dl = DataLoader(val_ds, shuffle=False, **kwargs)
+    test_dl = DataLoader(test_ds, shuffle=False, **kwargs)
 
     print(f"\nPost: Trainset size: {len(train_ds)}")
     print(f"Post: Trainset size per group:  {Counter(group_array[keep_bool])}\n")
@@ -109,13 +112,15 @@ def run():
     m = get_model(args.model, n_classes)
     m = m.to(DEVICE)
 
-    dp = args.sigma > 0 and args.clip > 0
+    dp = args.eps > 0 and args.delta > 0 and args.clip > 0
     if dp:
         m = ModuleValidator.fix(m)
         ModuleValidator.validate(m, strict=False)
+        accumulation_steps = len(train_ds) // args.bs
+        print(f"DP enabled. Accumulation steps = {accumulation_steps}\n")
     if args.dro:
         train_ds.group_array = group_array[keep_bool]
-        train_dl = get_loader(train_ds, train=True, reweight_groups=True)
+        train_dl = get_loader(train_ds, train=True, reweight_groups=True, **kwargs)
         loss_dro = LossComputer(
             torch.nn.CrossEntropyLoss(reduction="none"),
             is_robust=True,
@@ -192,28 +197,33 @@ def run():
                 wandb.log({"val/acc": acc_weight})
                 wandb.log({"val/acc_worst": acc_worst})
                 print(f"[val] ep {i}, acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
+
     # Train vision models
     else:
         optim = torch.optim.SGD(m.parameters(), args.lr, 0.9, weight_decay=args.wd)
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=args.epochs)
 
         if dp:
-            privacy_engine = PrivacyEngine()
-            m, optim, train_dl = privacy_engine.make_private(
-                module=m,
-                optimizer=optim,
-                data_loader=train_dl,
-                noise_multiplier=args.sigma,
+            privacy_engine = PrivacyEngine(
+                m,
+                batch_size=len(train_ds),
+                sample_size=len(train_ds),
+                epochs=args.epochs,
+                target_epsilon=args.eps,
+                target_delta=args.delta,
                 max_grad_norm=args.clip,
+                clipping_fn="Abadi",
+                clipping_mode="MixOpt",
+                clipping_style="all-layer",
             )
-            print(f"[DP] sigma {optim.noise_multiplier}, C {args.clip}")
+            privacy_engine.attach(optim)
 
-        for i in range(args.epochs):
+        for epoch in range(args.epochs):
             m.train()
             loss_total = 0
             accs_total = 0
             pbar = tqdm(train_dl)
-            for x, y, g in pbar:
+            for i, (x, y, g) in enumerate(pbar):
                 x, y = x.to(DEVICE), y.to(DEVICE)
                 pred = m(x)
 
@@ -226,22 +236,28 @@ def run():
 
                 loss_total += loss.item()
                 accs_total += (torch.argmax(pred, dim=1) == y).sum().item()
-
                 pbar.set_postfix_str(f"loss: {loss:.2f}")
-                optim.zero_grad()
+
                 loss.backward()
+                if dp and i % accumulation_steps != 0:
+                    continue
                 optim.step()
-            sched.step()
+                optim.zero_grad()
+
+            if args.sched:
+                sched.step()
 
             wandb.log({"train/lr": sched.get_last_lr()[0]})
             wandb.log({"train/acc": accs_total / len(train_ds)})
             wandb.log({"train/loss": loss_total / len(train_dl)})
-            if i % (args.epochs // 5) == 0 or i == args.epochs:
+            if epoch % (args.epochs // 5) == 0 or epoch == args.epochs:
                 loss, acc_weight, acc_worst = evaluate_groups(m, val_dl, DEVICE)
                 wandb.log({"val/loss": loss})
                 wandb.log({"val/acc": acc_weight})
                 wandb.log({"val/acc_worst": acc_worst})
-                print(f"[val] ep {i}, acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
+                print(
+                    f"[val] ep {epoch}, acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}"
+                )
 
     # Test model and save
     loss, acc_weight, acc_worst = evaluate_groups(m, test_dl, DEVICE)
@@ -256,7 +272,9 @@ def run():
 
     savedir = os.path.join(args.savedir, args.data)
     if dp:
-        savedir = os.path.join(savedir, f"{args.shadow_id}_{args.sigma}_{args.clip}")
+        savedir = os.path.join(
+            savedir, f"{args.shadow_id}_{args.eps}_{args.clip}_{args.delta}"
+        )
     else:
         savedir = os.path.join(savedir, str(args.shadow_id))
     os.makedirs(savedir, exist_ok=True)
