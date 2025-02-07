@@ -30,7 +30,12 @@ class LossComputer:
         group_array = data.group_array
         self.n_groups = len(np.unique(group_array))
         group_array = torch.LongTensor(group_array)
-        self.group_counts = (torch.arange(self.n_groups).unsqueeze(1) == group_array).sum(1).float().cuda()
+        self.group_counts = (
+            (torch.arange(self.n_groups).unsqueeze(1) == group_array)
+            .sum(1)
+            .float()
+            .cuda()
+        )
 
         adj = np.array([adj] * self.n_groups)
         if adj is not None:
@@ -52,7 +57,9 @@ class LossComputer:
         # compute per-sample and per-group losses
         per_sample_losses = self.criterion(yhat, y)
         group_loss, group_count = self.compute_group_avg(per_sample_losses, group_idx)
-        group_acc, group_count = self.compute_group_avg((torch.argmax(yhat, 1) == y).float(), group_idx)
+        group_acc, group_count = self.compute_group_avg(
+            (torch.argmax(yhat, 1) == y).float(), group_idx
+        )
 
         # update historical losses
         self.update_exp_avg_loss(group_loss, group_count)
@@ -85,14 +92,18 @@ class LossComputer:
 
     def compute_group_avg(self, losses, group_idx):
         # compute observed counts and mean loss for each group
-        group_map = (group_idx == torch.arange(self.n_groups).unsqueeze(1).long().cuda()).float()
+        group_map = (
+            group_idx == torch.arange(self.n_groups).unsqueeze(1).long().cuda()
+        ).float()
         group_count = group_map.sum(1)
         group_denom = group_count + (group_count == 0).float()  # avoid nans
         group_loss = (group_map @ losses.view(-1)) / group_denom
         return group_loss, group_count
 
     def update_exp_avg_loss(self, group_loss, group_count):
-        prev_weights = (1 - self.gamma * (group_count > 0).float()) * (self.exp_avg_initialized > 0).float()
+        prev_weights = (1 - self.gamma * (group_count > 0).float()) * (
+            self.exp_avg_initialized > 0
+        ).float()
         curr_weights = 1 - prev_weights
         self.exp_avg_loss = self.exp_avg_loss * prev_weights + group_loss * curr_weights
         self.exp_avg_initialized = (self.exp_avg_initialized > 0) + (group_count > 0)
@@ -108,20 +119,26 @@ class LossComputer:
         self.avg_acc = 0.0
         self.batch_count = 0.0
 
-    def update_stats(self, actual_loss, group_loss, group_acc, group_count, weights=None):
+    def update_stats(
+        self, actual_loss, group_loss, group_acc, group_count, weights=None
+    ):
         # avg group loss
         denom = self.processed_data_counts + group_count
         denom += (denom == 0).float()
         prev_weight = self.processed_data_counts / denom
         curr_weight = group_count / denom
-        self.avg_group_loss = prev_weight * self.avg_group_loss + curr_weight * group_loss
+        self.avg_group_loss = (
+            prev_weight * self.avg_group_loss + curr_weight * group_loss
+        )
 
         # avg group acc
         self.avg_group_acc = prev_weight * self.avg_group_acc + curr_weight * group_acc
 
         # batch-wise average actual loss
         denom = self.batch_count + 1
-        self.avg_actual_loss = (self.batch_count / denom) * self.avg_actual_loss + (1 / denom) * actual_loss
+        self.avg_actual_loss = (self.batch_count / denom) * self.avg_actual_loss + (
+            1 / denom
+        ) * actual_loss
 
         # counts
         self.processed_data_counts += group_count
@@ -158,7 +175,9 @@ def get_loader(data, train, reweight_groups, **kwargs):
         group_array = data.group_array
         n_groups = len(np.unique(group_array))
         group_array = torch.LongTensor(group_array)
-        group_counts = (torch.arange(n_groups).unsqueeze(1) == group_array).sum(1).float().cuda()
+        group_counts = (
+            (torch.arange(n_groups).unsqueeze(1) == group_array).sum(1).float().cuda()
+        )
 
         group_weights = len(data) / group_counts
         weights = group_weights[group_array]

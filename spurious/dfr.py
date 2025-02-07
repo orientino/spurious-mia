@@ -13,7 +13,7 @@ from tqdm import tqdm
 def save_embeddings(model, dl, dataname, datasplit, model_dir, device="cpu"):
     """Save embeddings, labels, and groups for a given dataset."""
 
-    if dataname in ["multinli"]:
+    if dataname in ["multinli", "civilcomments"]:
         model.classifier = torch.nn.Identity()
     else:
         model.fc = torch.nn.Identity()
@@ -25,7 +25,7 @@ def save_embeddings(model, dl, dataname, datasplit, model_dir, device="cpu"):
     for x, y, g in tqdm(dl):
         x = x.to(device)
 
-        if dataname in ["multinli"]:
+        if dataname in ["multinli", "civilcomments"]:
             embeddings = model(
                 input_ids=x[:, :, 0],
                 attention_mask=x[:, :, 1],
@@ -61,7 +61,7 @@ def train_dfr(
         for g_ in g_idx.values():
             np.random.shuffle(g_)
 
-        if dataname in ["fmow", "multinli"]:
+        if dataname in ["fmow", "multinli", "civilcomments"]:
             if dataname == "fmow":
                 del g_idx[5]  # remove the `others` group for evaluation
             min_g = np.min([np.min([len(g) for g in g_idx.values()]), samples])
@@ -107,7 +107,7 @@ def train_dfr(
 
     # Train logistic regression
     # Perform hyperparameter search and combine 10 logistic regression models
-    if dataname in ["waterbirds", "celeba"]:
+    if dataname in ["waterbirds", "celeba", "civilcomments"]:
         C_OPTIONS = [1.0, 0.7, 0.3, 0.1, 0.07, 0.03, 0.01]
         CLASS_WEIGHTS = [2.0, 3.0, 10.0, 100.0, 300.0, 1000.0]
         CLASS_WEIGHT_OPTIONS = (

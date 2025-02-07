@@ -45,6 +45,7 @@ parser.add_argument("--dfr", action="store_true")
 parser.add_argument("--eps", default=0, type=float)
 parser.add_argument("--delta", default=0, type=float)
 parser.add_argument("--clip", default=0, type=float)
+parser.add_argument("--patience", default=5, type=int)
 
 parser.add_argument("--debug", action="store_true")
 args = parser.parse_args()
@@ -68,6 +69,7 @@ def run():
     needed to ensure that each shadow model is trained with the same proportion
     of spurious groups.
     """
+
     train_ds, val_ds, test_ds, group_array, n_classes = get_data(args.data)
 
     keep_inds = []
@@ -95,7 +97,7 @@ def run():
     print(f"Pre: size per group:  {Counter(group_array)}")
     print(f"Pre: group array:  {group_array}")
 
-    kwargs = {"batch_size": args.bs, "num_workers": 4, "pin_memory": False}
+    kwargs = {"batch_size": args.bs, "num_workers": 2, "pin_memory": False}
     train_ds = Subset(train_ds, keep_inds)
     train_dl = DataLoader(train_ds, shuffle=True, **kwargs)
     val_dl = DataLoader(val_ds, shuffle=False, **kwargs)
@@ -105,12 +107,15 @@ def run():
     print(f"Post: Trainset size per group:  {Counter(group_array[keep_bool])}\n")
 
     """
-    Standard trainining pipeline.
-    We include spurious robust and differential privacy methods.
+    Standard trainining pipeline including:
+    - spurious robust training option 
+    - differential privacy training option
     """
 
     m = get_model(args.model, n_classes)
     m = m.to(DEVICE)
+    accumulation_steps = len(train_ds) // args.bs
+    print(f"Accumulation steps = {accumulation_steps}\n")
 
     dp = args.eps > 0 and args.delta > 0 and args.clip > 0
     if dp:
@@ -130,6 +135,11 @@ def run():
             adj=args.c,
             step_size=0.01,
         )
+
+    savedir = os.path.join(args.savedir, args.data, str(args.shadow_id))
+    os.makedirs(savedir, exist_ok=True)
+    np.save(os.path.join(savedir, "keep.npy"), keep_bool)
+    np.save(os.path.join(savedir, "groups.npy"), group_array)
 
     # Train language models
     if args.model == "bert":
@@ -153,9 +163,9 @@ def run():
             },
         ]
         optim = AdamW(params_optim, lr=args.lr, eps=1e-8)
-        t_total = len(train_dl) * args.epochs
-        print(f"\nt_total is {t_total}\n")
-        sched = WarmupLinearSchedule(optim, warmup_steps=0, t_total=t_total)
+        sched = WarmupLinearSchedule(
+            optim, warmup_steps=0, t_total=len(train_dl) * args.epochs
+        )
 
         for i in range(args.epochs):
             m.train()
@@ -191,16 +201,18 @@ def run():
             wandb.log({"train/lr": sched.get_last_lr()[0]})
             wandb.log({"train/acc": accs_total / len(train_ds)})
             wandb.log({"train/loss": loss_total / len(train_dl)})
-            if i % (args.epochs // 5) == 0 or i == args.epochs:
-                loss, acc_weight, acc_worst = evaluate_groups(m, val_dl, DEVICE)
-                wandb.log({"val/loss": loss})
-                wandb.log({"val/acc": acc_weight})
-                wandb.log({"val/acc_worst": acc_worst})
-                print(f"[val] ep {i}, acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
+
+            loss, acc_weight, acc_worst = evaluate_groups(m, val_dl, DEVICE)
+            wandb.log({"val/loss": loss})
+            wandb.log({"val/acc": acc_weight})
+            wandb.log({"val/acc_worst": acc_worst})
+            print(f"[val] ep {i}, acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
 
     # Train vision models
     else:
         optim = torch.optim.SGD(m.parameters(), args.lr, 0.9, weight_decay=args.wd)
+        if args.model in ["vit_s", "swin_t", "hiera_t"]:
+            optim = AdamW(m.parameters(), lr=args.lr, weight_decay=args.wd, eps=1e-8)
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=args.epochs)
 
         if dp:
@@ -217,7 +229,12 @@ def run():
                 clipping_style="all-layer",
             )
             privacy_engine.attach(optim)
+            savename = f"{args.shadow_id}_eps{args.eps}_clip{args.clip}_lr{args.lr}"
+            savedir = os.path.join(args.savedir, args.data, savename)
+            os.makedirs(savedir, exist_ok=True)
 
+        best_acc = 0
+        acc_worst_hist = []
         for epoch in range(args.epochs):
             m.train()
             loss_total = 0
@@ -239,8 +256,6 @@ def run():
                 pbar.set_postfix_str(f"loss: {loss:.2f}")
 
                 loss.backward()
-                if dp and i % accumulation_steps != 0:
-                    continue
                 optim.step()
                 optim.zero_grad()
 
@@ -250,37 +265,48 @@ def run():
             wandb.log({"train/lr": sched.get_last_lr()[0]})
             wandb.log({"train/acc": accs_total / len(train_ds)})
             wandb.log({"train/loss": loss_total / len(train_dl)})
-            if epoch % (args.epochs // 5) == 0 or epoch == args.epochs:
-                loss, acc_weight, acc_worst = evaluate_groups(m, val_dl, DEVICE)
-                wandb.log({"val/loss": loss})
-                wandb.log({"val/acc": acc_weight})
-                wandb.log({"val/acc_worst": acc_worst})
-                print(
-                    f"[val] ep {epoch}, acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}"
-                )
+
+            loss, acc_weight, acc_worst = evaluate_groups(m, val_dl, DEVICE)
+            wandb.log({"val/loss": loss})
+            wandb.log({"val/acc": acc_weight})
+            wandb.log({"val/acc_worst": acc_worst})
+            print(f"[val] ep {epoch}, acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
+
+            # # Save the best model
+            # acc_worst_hist.append(acc_worst)
+            # if acc_worst > best_acc:
+            #     patience = args.patience
+            #     best_acc = acc_worst
+            #     torch.save(m.state_dict(), os.path.join(savedir, "model.pt"))
+            #     print(f"[val] saved checkpoint at epoch {epoch}")
+            #     continue
+
+            # # Stop training if both `acc_weight` and `acc_worst` are not improving anymore
+            # if epoch > patience:
+            #     patience = patience - 1
+            #     print(f"[val] patience {patience}")
+            # if patience == 0:
+            #     wandb.log({"train/last_epoch": epoch})
+            #     break
 
     # Test model and save
+    torch.save(m.state_dict(), os.path.join(savedir, "model.pt"))
+    m.load_state_dict(torch.load(os.path.join(savedir, "model.pt")))
+    loss, acc_weight, acc_worst = evaluate_groups(m, train_dl, DEVICE)
+    wandb.log({"train/loss": loss})
+    wandb.log({"train/acc": acc_weight})
+    wandb.log({"train/acc_worst": acc_worst})
+    print(f"[train]\t acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
+    loss, acc_weight, acc_worst = evaluate_groups(m, val_dl, DEVICE)
+    wandb.log({"val/loss": loss})
+    wandb.log({"val/acc": acc_weight})
+    wandb.log({"val/acc_worst": acc_worst})
+    print(f"[val]\t acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
     loss, acc_weight, acc_worst = evaluate_groups(m, test_dl, DEVICE)
     wandb.log({"test/loss": loss})
     wandb.log({"test/acc": acc_weight})
     wandb.log({"test/acc_worst": acc_worst})
-    print(f"[test] acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
-
-    loss, acc_weight, acc_worst = evaluate_groups(m, train_dl, DEVICE)
-    wandb.log({"train/acc": acc_weight})
-    wandb.log({"train/acc_worst": acc_worst})
-
-    savedir = os.path.join(args.savedir, args.data)
-    if dp:
-        savedir = os.path.join(
-            savedir, f"{args.shadow_id}_{args.eps}_{args.clip}_{args.delta}"
-        )
-    else:
-        savedir = os.path.join(savedir, str(args.shadow_id))
-    os.makedirs(savedir, exist_ok=True)
-    np.save(os.path.join(savedir, "keep.npy"), keep_bool)
-    np.save(os.path.join(savedir, "groups.npy"), group_array)
-    torch.save(m.state_dict(), os.path.join(savedir, "model.pt"))
+    print(f"[test]\t acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
 
 
 @torch.no_grad()
@@ -315,7 +341,8 @@ def evaluate_groups(model, dl, device):
 
     # depending on the dataset, groups are different
     if args.data in ["waterbirds", "celeba"]:
-        gs = 2 * ys + gs
+        n_groups = len(np.unique(gs.cpu().numpy()))
+        gs = n_groups * ys + gs
 
     groups = defaultdict(list)
     for g, y, pred in zip(gs, ys, preds):

@@ -17,7 +17,9 @@ def load_one(path):
     """
     This function converts the output of `inference.py` using the logit function.
     """
-    opredictions = np.load(os.path.join(path, "logits.npy"))  # [n_examples, n_augs, n_classes]
+    opredictions = np.load(
+        os.path.join(path, "logits.npy")
+    )  # [n_examples, n_augs, n_classes]
 
     if args.dfr:
         predictions = opredictions  # DFR output is already a probability vector

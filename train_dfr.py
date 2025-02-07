@@ -8,9 +8,9 @@ import pytorch_lightning as pl
 import torch
 import wandb
 from torch.utils.data import DataLoader, Subset
-from utils import get_data, get_model
 
 from spurious.dfr import save_embeddings, test_dfr, train_dfr
+from utils import get_data, get_model
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model", default="resnet50", type=str)
@@ -36,7 +36,7 @@ DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("mp
 
 # Solves out-of-memory when running `save_embedding` with large dataset
 # https://pytorch.org/docs/stable/multiprocessing.html
-if args.data in ["celeba", "fmow", "multinli"]:
+if args.data in ["celeba", "fmow", "multinli", "civilcomments"]:
     torch.multiprocessing.set_sharing_strategy("file_system")
 
 
@@ -70,7 +70,9 @@ def run():
             keep = np.array(keep[args.shadow_id], dtype=bool)
             keep = keep.nonzero()[0]
         else:
-            keep = np.random.choice(group_size, size=int(args.pkeep * group_size), replace=False)
+            keep = np.random.choice(
+                group_size, size=int(args.pkeep * group_size), replace=False
+            )
             keep.sort()
         keep = group[keep]
         keep_inds.extend(keep)
@@ -102,12 +104,12 @@ def run():
         save_embeddings(model, test_dl, args.data, "test", savedir, DEVICE)
 
     train_dfr(
-        savedir, 
-        args.data, 
-        "train", 
-        norm=args.norm, 
-        n_heads=args.n_heads, 
-        samples=args.samples
+        savedir,
+        args.data,
+        "train",
+        norm=args.norm,
+        n_heads=args.n_heads,
+        samples=args.samples,
     )
     train_acc, train_acc_w = test_dfr(savedir, args.data, datasplit="train")
     val_acc, val_acc_w = test_dfr(savedir, args.data, datasplit="val")

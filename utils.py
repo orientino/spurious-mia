@@ -6,11 +6,13 @@ import timm
 import torch
 import torch.nn as nn
 import torchvision.transforms.v2 as T
-from bit import KNOWN_MODELS
-from convnextv2 import convnextv2_tiny
 from pytorch_transformers import BertConfig, BertForSequenceClassification
 from torch.utils.data import Dataset, Subset
+from transformers import BertTokenizerFast
 from wilds import get_dataset
+
+from bit import KNOWN_MODELS
+from convnextv2 import convnextv2_tiny
 
 
 def get_model(modelname, n_classes):
@@ -99,8 +101,6 @@ def get_model(modelname, n_classes):
 
 
 def get_data(dataname, augment=True):
-    datadir = "/scratch/users/czhang/opt/data"
-
     from pathlib import Path
 
     datadir = Path.home() / "opt/data"
@@ -150,6 +150,7 @@ def get_data(dataname, augment=True):
         orig_h = 218
         orig_min_dim = min(orig_w, orig_h)
         target_resolution = (orig_w, orig_h)
+        # target_resolution = (224, 224)  # TODO: remove
         transform_train = T.Compose(
             [
                 T.RandomResizedCrop(
@@ -188,6 +189,42 @@ def get_data(dataname, augment=True):
         splits = data.get_splits(["train", "val", "test"])
         train_ds, val_ds, test_ds = splits["train"], splits["val"], splits["test"]
         groups = train_ds.group_array
+    elif dataname == "civilcomments":
+        data = get_dataset("civilcomments", root_dir=datadir, download=True)
+        original = os.path.join(
+            datadir, "civilcomments_v1.0", "all_data_with_identities_old.csv"
+        )
+        if not os.path.exists(original):  # filter data with unique attributes
+            shutil.copy(
+                os.path.join(
+                    datadir, "civilcomments_v1.0", "all_data_with_identities.csv"
+                ),
+                original,
+            )
+            data._metadata_array = torch.LongTensor(
+                (data._metadata_df.loc[:, data._identity_vars] >= 0.5).values
+            )
+            data._metadata_fields = data._identity_vars
+            unique_attr = data._metadata_array.sum(1) == 1
+            df = pd.read_csv(
+                os.path.join(
+                    datadir, "civilcomments_v1.0", "all_data_with_identities.csv"
+                ),
+                index_col=0,
+            )
+            df_filtered = df[unique_attr.numpy()]
+            df_filtered.to_csv(
+                os.path.join(
+                    datadir, "civilcomments_v1.0", "all_data_with_identities.csv"
+                )
+            )
+            data = get_dataset("civilcomments", root_dir=datadir, download=True)
+        data._metadata_array = data._metadata_array.argmax(axis=1).numpy()
+        data._metadata_array += 8 * data._y_array.numpy()
+        train_ds = data.get_subset("train", transform=init_bert_transform())
+        val_ds = data.get_subset("val", transform=init_bert_transform())
+        test_ds = data.get_subset("test", transform=init_bert_transform())
+        groups = train_ds.metadata_array
     elif "fmow" in dataname:
         transform_train = T.Compose([T.RandomHorizontalFlip()] + normalize)
         transform_test = T.Compose(normalize)
@@ -341,6 +378,33 @@ class MultiNLIDataset(Dataset):
             subsets[split].group_array = self.group_array[indices]
             subsets[split].y_array = torch.from_numpy(self.y_array[indices])
         return subsets
+
+
+# CivilComments Dataset --------------------------------------
+
+
+def init_bert_transform():
+    """
+    Modified from https://github.com/p-lambda/wilds/blob/main/examples/transforms.py
+    """
+    tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
+
+    def transform(text):
+        tokens = tokenizer(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=300,  # 300
+            return_tensors="pt",
+        )
+        x = torch.stack(
+            (tokens["input_ids"], tokens["attention_mask"], tokens["token_type_ids"]),
+            dim=2,
+        )
+        x = torch.squeeze(x, dim=0)  # First shape dim is always 1
+        return x
+
+    return transform
 
 
 # FMoW Reduced Dataset --------------------------------------

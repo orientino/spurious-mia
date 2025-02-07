@@ -2,8 +2,8 @@
 # https://github.com/tensorflow/privacy/blob/master/research/mi_lira_2021/inference.py
 
 import argparse
-import os
 import collections
+import os
 
 import joblib
 import numpy as np
@@ -11,6 +11,7 @@ import torch
 from opacus.validators import ModuleValidator
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
 from utils import get_data, get_model
 
 parser = argparse.ArgumentParser()
