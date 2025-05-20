@@ -10,8 +10,6 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import wandb
-# from fastDP import PrivacyEngine
-from opacus.validators import ModuleValidator
 from pytorch_transformers import AdamW, WarmupLinearSchedule
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
@@ -117,12 +115,6 @@ def run():
     accumulation_steps = len(train_ds) // args.bs
     print(f"Accumulation steps = {accumulation_steps}\n")
 
-    dp = args.eps > 0 and args.delta > 0 and args.clip > 0
-    if dp:
-        m = ModuleValidator.fix(m)
-        ModuleValidator.validate(m, strict=False)
-        accumulation_steps = len(train_ds) // args.bs
-        print(f"DP enabled. Accumulation steps = {accumulation_steps}\n")
     if args.dro:
         train_ds.group_array = group_array[keep_bool]
         train_dl = get_loader(train_ds, train=True, reweight_groups=True, **kwargs)
@@ -215,24 +207,6 @@ def run():
             optim = AdamW(m.parameters(), lr=args.lr, weight_decay=args.wd, eps=1e-8)
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=args.epochs)
 
-        if dp:
-            privacy_engine = PrivacyEngine(
-                m,
-                batch_size=len(train_ds),
-                sample_size=len(train_ds),
-                epochs=args.epochs,
-                target_epsilon=args.eps,
-                target_delta=args.delta,
-                max_grad_norm=args.clip,
-                clipping_fn="Abadi",
-                clipping_mode="MixOpt",
-                clipping_style="all-layer",
-            )
-            privacy_engine.attach(optim)
-            savename = f"{args.shadow_id}_eps{args.eps}_clip{args.clip}_lr{args.lr}"
-            savedir = os.path.join(args.savedir, args.data, savename)
-            os.makedirs(savedir, exist_ok=True)
-
         best_acc = 0
         acc_worst_hist = []
         for epoch in range(args.epochs):
@@ -272,25 +246,25 @@ def run():
             wandb.log({"val/acc_worst": acc_worst})
             print(f"[val] ep {epoch}, acc {acc_weight:.4f}, acc_worst {acc_worst:.4f}")
 
-            # # Save the best model
-            # acc_worst_hist.append(acc_worst)
-            # if acc_worst > best_acc:
-            #     patience = args.patience
-            #     best_acc = acc_worst
-            #     torch.save(m.state_dict(), os.path.join(savedir, "model.pt"))
-            #     print(f"[val] saved checkpoint at epoch {epoch}")
-            #     continue
+            # Save the best model
+            acc_worst_hist.append(acc_worst)
+            if acc_worst > best_acc:
+                patience = args.patience
+                best_acc = acc_worst
+                torch.save(m.state_dict(), os.path.join(savedir, "model.pt"))
+                print(f"[val] saved checkpoint at epoch {epoch}")
+                continue
 
-            # # Stop training if both `acc_weight` and `acc_worst` are not improving anymore
-            # if epoch > patience:
-            #     patience = patience - 1
-            #     print(f"[val] patience {patience}")
-            # if patience == 0:
-            #     wandb.log({"train/last_epoch": epoch})
-            #     break
+            # Stop training if both `acc_weight` and `acc_worst` are not improving anymore
+            if epoch > patience:
+                patience = patience - 1
+                print(f"[val] patience {patience}")
+            if patience == 0:
+                wandb.log({"train/last_epoch": epoch})
+                break
 
     # Test model and save
-    torch.save(m.state_dict(), os.path.join(savedir, "model.pt"))
+    torch.save(m.state_dict(), os.path.join(savedir, "model_last.pt"))
     m.load_state_dict(torch.load(os.path.join(savedir, "model.pt")))
     loss, acc_weight, acc_worst = evaluate_groups(m, train_dl, DEVICE)
     wandb.log({"train/loss": loss})

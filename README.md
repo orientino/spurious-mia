@@ -4,7 +4,6 @@ Prepare the environment
 conda create -f env.yml -n spurious
 python3 setup.py develop
 ```
-For DP training install [fastDP](https://github.com/awslabs/fast-differential-privacy/tree/main) and uncomment line 14 of `train_spurious.py`.
 
 ## Run
 Run the LiRA attack on the Waterbirds dataset:

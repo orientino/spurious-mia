@@ -1,7 +1,5 @@
 # PyTorch implementation of
 # https://github.com/tensorflow/privacy/blob/master/research/mi_lira_2021/train.py
-#
-# author: Chenxiang Zhang (orientino)
 
 import argparse
 import os
@@ -13,14 +11,14 @@ import pytorch_lightning as pl
 import torch
 import wandb
 from opacus import PrivacyEngine
-from opacus.validators import ModuleValidator
 from opacus.utils.batch_memory_manager import BatchMemoryManager
+from opacus.validators import ModuleValidator
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-from utils import get_data, get_model
 
 from spurious.groupdro import LossComputer, get_loader
+from utils import get_data, get_model
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--lr", default=0.1, type=float)
@@ -101,11 +99,11 @@ def run():
     train_ds = Subset(train_ds, keep_inds)
     train_dl = DataLoader(train_ds, shuffle=True, batch_size=args.bs, **kwargs)
     val_dl = DataLoader(val_ds, shuffle=False, batch_size=16, **kwargs)
-    test_dl = DataLoader(test_ds, shuffle=False, batch_size=16,  **kwargs)
+    test_dl = DataLoader(test_ds, shuffle=False, batch_size=16, **kwargs)
 
     print(f"\nPost: Trainset size: {len(train_ds)}")
     print(f"Post: Trainset size per group:  {Counter(group_array[keep_bool])}\n")
-    
+
     """
     Standard trainining pipeline.
     We include spurious robust and differential privacy methods.
@@ -144,7 +142,7 @@ def run():
             target_epsilon=args.eps,
             target_delta=args.delta,
             max_grad_norm=args.clip,
-            clipping="flat"
+            clipping="flat",
         )
         savename = f"{args.shadow_id}_eps{args.eps}_clip{args.clip}_lr{args.lr}"
     else:
@@ -163,13 +161,11 @@ def run():
         accs_total = 0
         # pbar = tqdm(train_dl)
         with BatchMemoryManager(
-            data_loader=train_dl, 
-            max_physical_batch_size=32, 
-            optimizer=optim
+            data_loader=train_dl, max_physical_batch_size=32, optimizer=optim
         ) as safe_dl:
             for i, (x, y, g) in enumerate(tqdm(safe_dl)):
                 x, y = x.to(DEVICE), y.to(DEVICE)
-                
+
                 pred = m(x)
                 if args.dro:
                     g = g[:, 0].to(DEVICE)
@@ -177,7 +173,7 @@ def run():
                     loss = loss_dro.loss(pred, y, g, True)
                 else:
                     loss = F.cross_entropy(pred, y)
-                    
+
                 loss_total += loss.item()
                 accs_total += (torch.argmax(pred, dim=1) == y).sum().item()
                 # pbar.set_postfix_str(f"loss: {loss:.2f}")
